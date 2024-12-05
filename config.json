@@ -1,0 +1,55 @@
+{
+
+    "UAV_Scenario_Config": 
+    {
+        "bs_z_antenna_num": 32,
+        "bs_y_antenna_num": 16,
+        "ue_z_antenna_num": 32,
+        "ue_y_antenna_num": 16, 
+
+        "c": 3e8,
+        "f_c": 30e9,
+
+        "band_width": 100,
+        "t_csi": 0.01,
+        
+        "bs_tilt": 0.5235987755982988,
+
+        "bs_tx_power_max": 40,      
+        "ue_tx_power_max": 8,       
+        "bs_rx_noise_figure": 10,   
+        "ue_rx_noise_figure": 10,   
+        "sigma2_dBm": -174,
+        
+        "rot_speed_max_div": 20,
+        "rot_acc_max_div": 10,
+        "move_speed_xy_high": 15,
+        "move_speed_z_high": 3,
+        "ini_pos_y_low": 2300,
+        "ini_pos_y_high": 3000
+    }, 
+    "Dataset_Config":
+    {
+        "track_num": 30,
+        "ue_num": 300, 
+        "track_period": 10,
+        "dataset_pth":"./data/UAV_dataset_%duser_%dtracknum.h5",
+        "window_input": 7,
+        "window_output": 5
+    },
+    "Network_Config":
+    {
+        "batch_size": 50,
+        "num_epoch": 10000,
+        "dropout": 0,
+        "reTrain": false
+    },
+    "Test_Config":
+    {
+        "dataset_pth": "./data/UAV_test.h5",
+        "ue_num": 1,
+        "track_period_baseline": 20,
+        "num_csi": 300,
+        "retrack_SNR_threshold": 40
+    }
+}
