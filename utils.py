@@ -213,6 +213,16 @@ def calculate_SNR(codebook,
     snr = P_bs * np.abs(br) ** 2 / sigma2
     return 10 * np.log10(snr)
 
+## 为旋转角和位置加噪声
+## input: (3)
+def add_gauss_noise(data):
+    # if data.ndim == 1:
+    # scale = np.random.rand() * 0.01
+    scale = np.random.normal(loc = 0, scale = 0.01, size = data.shape)
+    data += data * scale
+    return data
+    
+
 if __name__ == "__main__":
     # gcs_theta_zod = np.pi / 3
     # gcs_phi_aod = np.pi / 2

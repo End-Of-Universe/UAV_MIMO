@@ -29,84 +29,64 @@ class Layer(nn.Module):
     def forward(self, x):
         return self.net(x)
 
-class Access_Selector(nn.Module):
+class Prob_Accessor(nn.Module):
     def __init__(self, 
-                 hidden_size = 30
+                 search_r
                  ):
         super().__init__()
-        self.linear_net = nn.Sequential(Layer(in_dim = 6, out_dim = hidden_size, dropout_p = config["Network_Config"]["dropout"]),
-                                        Layer(in_dim = hidden_size, out_dim = hidden_size, dropout_p = config["Network_Config"]["dropout"]),
-                                        Layer(in_dim = hidden_size, out_dim = hidden_size, dropout_p = config["Network_Config"]["dropout"]),
-                                        Layer(in_dim = hidden_size, out_dim = hidden_size, dropout_p = config["Network_Config"]["dropout"]),
-                                        Layer(in_dim = hidden_size, out_dim = hidden_size, dropout_p = config["Network_Config"]["dropout"])
-                                        )
-        self.bs_y_net = nn.Linear(hidden_size, config["Network_Config"]["bs_y_antenna_num"])
-        self.bs_z_net = nn.Linear(hidden_size, config["Network_Config"]["bs_z_antenna_num"])
-        self.ue_y_net = nn.Linear(hidden_size, config["Network_Config"]["ue_y_antenna_num"])
-        self.ue_z_net = nn.Linear(hidden_size, config["Network_Config"]["ue_z_antenna_num"])
-        
+        self.search_r = search_r
+        self.hidden_size = 50
+        self.net = nn.Sequential(Layer(in_dim = 6, out_dim = self.hidden_size),
+                                 Layer(in_dim = self.hidden_size, out_dim = self.hidden_size),
+                                 Layer(in_dim = self.hidden_size, out_dim = (self.search_r * 2 + 1) ** 2),
+                                 nn.Softmax(dim = 1)
+                                 )
+    
     def forward(self, 
-                delta_pos,  # (N, 3), torch.tensor
-                rot,        # (N, 3), torch.tensor
+                delta_pos,      # (batch_size, 3)  
+                ue_rot          # (batch_size, 3)
                 ):
-        x = torch.cat((delta_pos, rot), dim=1)
-        x = self.linear_net(x)
-        ## 计算BS和UE的y-z子概率
-        bs_y_p = self.bs_y_net(x)   # (N, bs_y_num)
-        bs_z_p = self.bs_z_net(x)   # (N, bs_z_num)
-        ue_y_p = self.ue_y_net(x)   # (N, ue_y_num)
-        ue_z_p = self.ue_z_net(x)   # (N, ue_z_num)
-        ## 计算BS和UE的合成概率
-        bs_p = combination_mul(bs_y_p, bs_z_p)
-        ue_p = combination_mul(ue_y_p, ue_z_p)
-        return bs_p, ue_p
-    
-    def save(self, model_path):
+        batch_size = delta_pos.shape[0]
+        x = torch.cat((delta_pos, ue_rot), dim = 1)     # (batch_size, 6)
+        prob = self.net(x)
+        # length = 2 * self.search_r + 1
+        # prob = prob.reshape(batch_size, length, length)
+        return prob
+
+    def save(self, 
+             model_path
+             ):
         torch.save(self.state_dict(), model_path)
-        print("Selector_1's params been saved to %s" % model_path)
+        print("Prob_Accessor's params been saved to %s" % model_path)
     
-    def load(self, model_path):
+    def load(self, 
+             model_path
+             ):
         if(str(device) == 'cpu'):
             model = torch.load(model_path, map_location=torch.device('cpu'))
             self.load_state_dict(model)
         else:
             self.load_state_dict(torch.load(model_path, weights_only=True))
         
-        print("Selector_1 loaded parameters from %s" % model_path)
+        print("Prob_Accessor has loaded parameters from %s" % model_path)
 
+# class Accessor_Loss(nn.Module):
+#     def __init__(self):
+#         super().__init__()
+#         self.ce_loss = nn.CrossEntropyLoss()
 
-ce_loss = nn.CrossEntropyLoss()
-
-
-class Access_Loss(nn.Module):
-    def __init__(self):
-        super().__init__()
-    
-    def forward(self,
-                bs_p, 
-                ue_p, 
-                bs_label, 
-                ue_label
-                ):
-        bs_loss = ce_loss(bs_p, bs_label)
-        ue_loss = ce_loss(ue_p, ue_label)
-        return bs_loss + ue_loss
-        
-
-def combination_mul(a, b):
-    # 获取a和b的列数
-    y_num = a.size(1)
-    z_num = b.size(1)
-    N = y_num * z_num
-
-    # 扩展a和b的维度，以便进行广播操作
-    a = a.unsqueeze(2).expand(-1, -1, z_num)
-    a = a.reshape(-1, N)
-    b = b.unsqueeze(1).expand(-1, y_num, -1)
-    b = b.reshape(-1, N)
-    
-    c = a * b
-    return c
+#     # prob:     (batch_size, 2 * r + 1, 2 * r + 1)
+#     # label:    (batch_size, 2 * r + 1, 2 * r + 1)
+#     def forward(self, 
+#                 prob, 
+#                 label
+#                 ):
+#         batch_size = prob.shape[0]
+#         prob = prob.reshape(batch_size, -1)
+#         label = label.reshape(batch_size, -1)
+#         label = torch.argmax(label, dim = 1)
+#         loss = self.ce_loss(prob, label)
+#         return loss
 
 # ------------------------------------- beam tracking network -------------------------------------
 class Tracker_SNR_single(nn.Module):
@@ -341,7 +321,7 @@ class DNNHead(nn.Module):
                                          groups=1
                                          )
         
-        self.linear = nn.Linear(in_features = config["Dataset_Config"]["window_input"],
+        self.linear = nn.Linear(in_features = config["Track_Dataset_Config"]["window_input"],
                                 out_features = 1
                                 )
     def forward(self, x):
@@ -463,56 +443,58 @@ class Track_Loss(nn.Module):
         return loss
 
 model_dict = {
-    "LSTM": {
-        "model_pth": "./model/track_model_LSTM.pth",
-        "predictor": Tracker_LSTM(window_input = config["Dataset_Config"]["window_input"],
-                                  window_output = config["Dataset_Config"]["window_output"])
+    "Prob_Accessor": {
+        "bs_model_pth": "./model/bs_prob_accessor.pth",
+        "ue_model_pth": "./model/ue_prob_accessor.pth",
+        "bs_predictor": Prob_Accessor(search_r = config["Access_Dataset_Config"]["bs_search_r"]),
+        "ue_predictor": Prob_Accessor(search_r = config["Access_Dataset_Config"]["ue_search_r"])
     },
-    "Conv1d": {
-        "model_pth": "./model/track_model_Conv1d.pth",
-        "predictor": Tracker_Conv1d(window_size = config["Dataset_Config"]["window_input"])
-    },
+
     "Linear": {
-        "mu_net_pth": "./model/Linear_mu_net_%din%dout.pth" % (config["Dataset_Config"]["window_input"],
-                                                               config["Dataset_Config"]["window_output"]
+        "mu_net_pth": "./model/Linear_mu_net_%din%dout.pth" % (config["Track_Dataset_Config"]["window_input"],
+                                                               config["Track_Dataset_Config"]["window_output"]
                                                                ),
-        "var_net_pth": "./model/Linear_var_net_%din%dout.pth" % (config["Dataset_Config"]["window_input"],
-                                                                 config["Dataset_Config"]["window_output"]
+        "var_net_pth": "./model/Linear_var_net_%din%dout.pth" % (config["Track_Dataset_Config"]["window_input"],
+                                                                 config["Track_Dataset_Config"]["window_output"]
                                                                  ),
-        "predictor": Tracker_Linear(window_input = config["Dataset_Config"]["window_input"],
-                                    window_output = config["Dataset_Config"]["window_output"])
+        "predictor": Tracker_Linear(window_input = config["Track_Dataset_Config"]["window_input"],
+                                    window_output = config["Track_Dataset_Config"]["window_output"])
     },
     "SNR_single": {
         "model_pth": "./model/track_model_SNR_single.pth",
-        "predictor": Tracker_SNR_single(window_input = config["Dataset_Config"]["window_input"])
+        "predictor": Tracker_SNR_single(window_input = config["Track_Dataset_Config"]["window_input"])
     }
 }
 
 if __name__ == "__main__":
-    batch_size = 1
-    window_size = config["Dataset_Config"]["window_input"]
+    batch_size = 10
+    # window_size = config["Track_Dataset_Config"]["window_input"]
 
-    SNR = torch.rand(size = (batch_size, window_size))
-    delta_pos = torch.rand(size = (batch_size, window_size, 3))
-    ue_rot = torch.rand(size = (batch_size, window_size, 3))
+    # SNR = torch.rand(size = (batch_size, window_size))
+    # delta_pos = torch.rand(size = (batch_size, window_size, 3))
+    # ue_rot = torch.rand(size = (batch_size, window_size, 3))
 
-    # mu_hat = torch.rand(size = (batch_size, ))
-    # sigma2_hat = torch.rand(size = (batch_size, ))
-    SNR_label = torch.rand(size = (batch_size, ))
+    # # mu_hat = torch.rand(size = (batch_size, ))
+    # # sigma2_hat = torch.rand(size = (batch_size, ))
+    # SNR_label = torch.rand(size = (batch_size, ))
 
-    model = model_dict["Linear"]["predictor"]
-    model.save(2)
-    mu, var = model(SNR, delta_pos, ue_rot, 2)
-    print(mu)
-    print(var)
+    # model = model_dict["Linear"]["predictor"]
+    # model.save(2)
+    # mu, var = model(SNR, delta_pos, ue_rot, 2)
+    # print(mu)
+    # print(var)
 
-    # mu = torch.tensor([[1], [2], [3]], dtype=torch.float32)
-    # SNR_label = torch.tensor([[2], [4], [7]], dtype=torch.float32)
+    model = Prob_Accessor(search_r = 3)
+    delta_pos = torch.rand((batch_size, 3))
+    ue_rot = torch.rand((batch_size, 3))
+    prob = model(delta_pos, ue_rot)
+    # print(torch.sum(prob, dim = 1))
 
-    # criterion1 = Track_Loss()
-    # criterion2 = nn.L1Loss()
-    # loss1 = criterion1(mu, SNR_label)
-    # loss2 = criterion2(mu, SNR_label)
-    # print(loss1)
-    # print(loss2)
+    criterion = nn.CrossEntropyLoss()
+    label = torch.zeros((batch_size), dtype = torch.long)
+    loss = criterion(prob, label)
+    print(loss)
+    print(prob.shape)
+
+    
     

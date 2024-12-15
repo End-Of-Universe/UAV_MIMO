@@ -24,7 +24,7 @@ import os
 
 import utils
 from dft_codebook import Dft_codebook
-from access_and_track import initial_access_3
+from access_and_track import initial_access_5, initial_access_4
 from network import model_dict
 itype = np.int32
 ftype = np.float32
@@ -591,15 +591,15 @@ class UAV_environment:
     def test(self, 
             model_type = "Linear",
             ):
-        self.ue_num = config["Test_Config"]["ue_num"]
-        track_period_baseline = config["Test_Config"]["track_period_baseline"]
-        self.times_pilot = config["Test_Config"]["num_csi"]
-        threshold = config["Test_Config"]["retrack_SNR_threshold"]
+        self.ue_num = config["Track_Compare_Config"]["ue_num"]
+        track_period_baseline = config["Track_Compare_Config"]["track_period_baseline"]
+        self.times_pilot = config["Track_Compare_Config"]["num_csi"]
+        threshold = config["Track_Compare_Config"]["retrack_SNR_threshold"]
         self.__initialize_environment()
-        print("start UAV testing...")
+        print("UAV comparison between baseline and data-driven method is running...")
 
-        window_input = config["Dataset_Config"]["window_input"]
-        window_output = config["Dataset_Config"]["window_output"]
+        window_input = config["Track_Dataset_Config"]["window_input"]
+        window_output = config["Track_Dataset_Config"]["window_output"]
 
         bs_search_r = 1
         ue_search_r = 1
@@ -618,6 +618,12 @@ class UAV_environment:
         
         model = model_dict[model_type]["predictor"].to(device)
         model.load()
+
+        bs_accessor = model_dict["Prob_Accessor"]["bs_predictor"]
+        bs_accessor.load(model_dict["Prob_Accessor"]["bs_model_pth"])
+
+        ue_accessor = model_dict["Prob_Accessor"]["ue_predictor"]
+        ue_accessor.load(model_dict["Prob_Accessor"]["ue_model_pth"])
 
         SNR_input_window = np.zeros((self.ue_num, window_input), dtype = np.float32)
         delta_pos_window = np.zeros((self.ue_num, window_input, 3), dtype = np.float32)
@@ -655,13 +661,17 @@ class UAV_environment:
             self.__update_AOA_and_AOD()
             self.__update_ZOA_and_ZOD()
             self.__update_cluster_gain()
-            # h_t = self.__update_channel_response_single_processing()
-            h_t = self.__update_channel_response_multiple_processing()
+            h_t = self.__update_channel_response_single_processing()
+            # h_t = self.__update_channel_response_multiple_processing()
 
             count_rot -= 1
 
             delta_pos = self.ue_loc[:, :, self.t] - np.tile(self.bs_loc[None, :], (self.ue_num, 1))
-            ue_rot = self.ue_rot[:, :, self.t]
+            ue_rot = np.copy(self.ue_rot[:, :, self.t])
+
+            ## 加噪声
+            delta_pos = utils.add_gauss_noise(delta_pos)
+            ue_rot = utils.add_gauss_noise(ue_rot)
             
             SNR_input_window[:, 0:-1] = SNR_input_window[:, 1:]
             ue_rot_window[:, 0:-1, :] = ue_rot_window[:, 1:, :]
@@ -672,8 +682,10 @@ class UAV_environment:
             for user in range(self.ue_num):
                 ## Baseline: 每隔track_period_baseline个CSI周期track一次
                 if beam_track_baseline[user][0] == None and beam_track_baseline[user][1] == None:
-                    beam_track_baseline[user][0], beam_track_baseline[user][1], _ = initial_access_3(h_t[user], delta_pos[user], 
-                                                                                                     ue_rot[user], codebook, bs_search_r, ue_search_r)
+                    beam_track_baseline[user][0], beam_track_baseline[user][1], _, expense_baseline = initial_access_4(h_t[user], delta_pos[user], ue_rot[user],
+                                                                                                                    codebook, bs_accessor, ue_accessor, 
+                                                                                                                    expense_flag = True)
+
                     stage_t_baseline[user] += 1
                     track_point_baseline[user].append(self.t)
                     if len(track_point_baseline[user]) > 1:
@@ -681,9 +693,9 @@ class UAV_environment:
                         track_t_last = track_point_baseline[user][-2]
                         track_period = track_t_now - track_t_last   ## 此次跟踪周期
                         if track_period not in track_expense["baseline"]:   
-                            track_expense["baseline"][track_period] = delta_expense
+                            track_expense["baseline"][track_period] = expense_baseline
                         else:
-                            track_expense["baseline"][track_period] += delta_expense
+                            track_expense["baseline"][track_period] += expense_baseline
 
                 snr_baseline = utils.calculate_SNR(codebook, h_t[user], beam_track_baseline[user][0], beam_track_baseline[user][1])
                 SNR_baseline[user, self.t] = snr_baseline
@@ -698,8 +710,13 @@ class UAV_environment:
                 ## Data-driven Track
                 # if beam_track_model[user][0] == None and beam_track_model[user][1] == None:
                 if self.t == track_start_t[user]:
-                    beam_track_model[user][0], beam_track_model[user][1], _ = initial_access_3(h_t[user], delta_pos[user], 
-                                                                                               ue_rot[user], codebook, bs_search_r, ue_search_r)
+                    # beam_track_model[user][0], beam_track_model[user][1], _ = initial_access_3(h_t[user], delta_pos[user], 
+                    #                                                                            ue_rot[user], codebook, bs_search_r, ue_search_r)
+
+                    beam_track_model[user][0], beam_track_model[user][1], _, expense_model = initial_access_4(h_t[user], delta_pos[user], ue_rot[user],
+                                                                                               codebook, bs_accessor, ue_accessor, 
+                                                                                               expense_flag = True)
+
                     stage_t_model[user] += 1
                     track_point_model[user].append(self.t)
                     if len(track_point_model[user]) > 1:
@@ -707,9 +724,9 @@ class UAV_environment:
                         track_t_last = track_point_model[user][-2]
                         track_period = track_t_now - track_t_last   ## 此次跟踪周期
                         if track_period not in track_expense["model"]:   
-                            track_expense["model"][track_period] = delta_expense
+                            track_expense["model"][track_period] = expense_model
                         else:
-                            track_expense["model"][track_period] += delta_expense
+                            track_expense["model"][track_period] += expense_model
 
                 snr_model = utils.calculate_SNR(codebook, h_t[user], beam_track_model[user][0], beam_track_model[user][1])
                 SNR_model[user, self.t] = snr_model
@@ -749,7 +766,7 @@ class UAV_environment:
                         if t == window_output - 1:
                             prediction_start_t[user] = self.t + interval_prediction
       
-        dataset_pth = config["Test_Config"]["dataset_pth"]
+        dataset_pth = config["Track_Compare_Config"]["dataset_pth"]
         test_dataset_h5 = h5py.File(dataset_pth, "w")
         test_dataset_h5.create_dataset("times_pilot", data = self.times_pilot)
         test_dataset_h5.create_dataset("ue_num", data = self.ue_num)
@@ -789,8 +806,8 @@ class UAV_environment:
         test_dataset_h5.close()
 
 def plot_track_curve(user = 0):
-    dataset_pth = config["Test_Config"]["dataset_pth"]
-    threshold = config["Test_Config"]["retrack_SNR_threshold"]
+    dataset_pth = config["Track_Compare_Config"]["dataset_pth"]
+    threshold = config["Track_Compare_Config"]["retrack_SNR_threshold"]
     test_dataset_h5 = h5py.File(dataset_pth, "r")
 
     times_pilot = test_dataset_h5["times_pilot"][()]
@@ -878,7 +895,7 @@ def plot_track_curve(user = 0):
     plt.show()
 
 def plot_expense_bar():
-    dataset_pth = config["Test_Config"]["dataset_pth"]
+    dataset_pth = config["Track_Compare_Config"]["dataset_pth"]
     test_dataset_h5 = h5py.File(dataset_pth, "r")
     expense_baseline = test_dataset_h5["baseline"]["track_expense"][:]
     expense_model = test_dataset_h5["data_driven"]["track_expense"][:]
@@ -933,12 +950,12 @@ def update_channel_response_for_user(env,
                             
 if __name__ == "__main__":
     ## 生成场景
-    # env = UAV_environment()
-    # env.test(model_type="Linear")
+    env = UAV_environment()
+    env.test(model_type="Linear")
 
     ## 绘图
-    user = 117
-    # for user in range(300):
+    user = 0#117
+    # for user in range(10):
     plot_track_curve(user = user)
     plot_expense_bar()
 

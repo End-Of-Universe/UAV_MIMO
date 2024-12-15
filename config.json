@@ -28,7 +28,14 @@
         "ini_pos_y_low": 2300,
         "ini_pos_y_high": 3000
     }, 
-    "Dataset_Config":
+    "Access_Dataset_Config":
+    {
+        "ue_num": 10000,
+        "bs_search_r": 3,
+        "ue_search_r": 3,
+        "dataset_pth": "./data/UAV_access_%duser.h5"
+    },
+    "Track_Dataset_Config":
     {
         "track_num": 40,
         "ue_num": 300, 
@@ -44,12 +51,12 @@
         "dropout": 0,
         "reTrain": false
     },
-    "Test_Config":
+    "Track_Compare_Config":
     {
         "dataset_pth": "./data/UAV_test.h5",
-        "ue_num": 300,
+        "ue_num": 1,
         "track_period_baseline": 20,
-        "num_csi": 400,
+        "num_csi": 200,
         "retrack_SNR_threshold": 40
     }
 }

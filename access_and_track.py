@@ -235,8 +235,8 @@ def initial_access_3(h,             ## 信道矩阵 (Nt * Nr, Nt * Nr)
     z_center_bs, y_center_bs = utils.calculate_upa_index(theta_zod_los, phi_aod_los, bs_Nz, bs_Ny)
     z_center_ue, y_center_ue = utils.calculate_upa_index(theta_zoa_los, phi_aoa_los, ue_Nz, ue_Ny)
     
-    bs_idx_set = list()     ## BS端搜索的波束索引集合
-    ue_idx_set = list()     ## UE端搜索的波束索引集合
+    bs_2d_idx_set = list()     ## BS端搜索的波束索引集合
+    ue_2d_idx_set = list()     ## UE端搜索的波束索引集合
     ## 生成BS端所有用于遍历的波束
     z_bs_start = max(0, z_center_bs - bs_search_r)
     z_bs_end = min(bs_Nz - 1, z_center_bs + bs_search_r + 1)
@@ -244,7 +244,8 @@ def initial_access_3(h,             ## 信道矩阵 (Nt * Nr, Nt * Nr)
     y_bs_end = min(bs_Ny - 1, y_center_bs + bs_search_r + 1)
     for z_bs in range(z_bs_start, z_bs_end):
         for y_bs in range(y_bs_start, y_bs_end):
-            bs_idx_set.append(z_bs + y_bs * bs_Nz)
+            # bs_idx_set.append(z_bs + y_bs * bs_Nz)
+            bs_2d_idx_set.append((z_bs, y_bs))
     ## 生成UE端所有用于遍历的波束
     z_ue_start = max(0, z_center_ue - ue_search_r)
     z_ue_end = min(ue_Nz - 1, z_center_ue + ue_search_r + 1)
@@ -252,73 +253,180 @@ def initial_access_3(h,             ## 信道矩阵 (Nt * Nr, Nt * Nr)
     y_ue_end = min(ue_Ny - 1, y_center_ue + ue_search_r + 1)
     for z_ue in range(z_ue_start, z_ue_end):
         for y_ue in range(y_ue_start, y_ue_end):
-            ue_idx_set.append(z_ue + y_ue * ue_Nz)
+            # ue_idx_set.append(z_ue + y_ue * ue_Nz)
+            ue_2d_idx_set.append((z_ue, y_ue))
 
     psd_opt = -1e10
     idx_bs_1d_opt = None
     idx_ue_1d_opt = None
+    idx_bs_2d_opt = None
+    idx_ue_2d_opt = None
 
-    for idx_bs in bs_idx_set:
-        hr = np.matmul(h, codebook.bs_dft_codebook[:, idx_bs])
-        br = np.matmul(np.conjugate(codebook.ue_dft_codebook[:, ue_idx_set]).T, hr)
+    ue_1d_idx_set = [z_ue + y_ue * ue_Nz for (z_ue, y_ue) in ue_2d_idx_set]
+
+    for (z_bs, y_bs) in bs_2d_idx_set:
+        idx_1d_bs = z_bs + y_bs * bs_Nz
+        
+        hr = np.matmul(h, codebook.bs_dft_codebook[:, idx_1d_bs])
+        br = np.matmul(np.conjugate(codebook.ue_dft_codebook[:, ue_1d_idx_set]).T, hr)
         psd_r = utils.convert_to_L1RSRP(np.abs(br), config["UAV_Scenario_Config"]["ue_tx_power_max"])
         
         temp_index = np.argmax(psd_r)
-        idx_ue = ue_idx_set[temp_index]
+        idx_1d_ue = ue_1d_idx_set[temp_index]
         psd_max = psd_r[temp_index]
 
         if psd_max > psd_opt:
             psd_opt = psd_max
-            idx_bs_1d_opt = idx_bs
-            idx_ue_1d_opt = idx_ue
+            idx_bs_1d_opt = idx_1d_bs
+            idx_ue_1d_opt = idx_1d_ue
+            
+            z_ue = idx_1d_ue % ue_Nz
+            y_ue = idx_1d_ue // ue_Nz
+            idx_bs_2d_opt = (z_bs, y_bs)
+            idx_ue_2d_opt = (z_ue, y_ue)
+    z_bs_s = idx_bs_2d_opt[0] - z_center_bs + bs_search_r
+    y_bs_s = idx_bs_2d_opt[1] - y_center_bs + bs_search_r
+    z_ue_s = idx_ue_2d_opt[0] - z_center_ue + ue_search_r
+    y_ue_s = idx_ue_2d_opt[1] - y_center_ue + ue_search_r
 
-    return idx_bs_1d_opt, idx_ue_1d_opt, psd_opt
+    return  idx_bs_1d_opt, idx_ue_1d_opt, \
+            (z_bs_s, y_bs_s, z_ue_s, y_ue_s), \
+            psd_opt
 
-
-def initial_access_4(h, 
-                     delta_pos, 
-                     ue_rot, 
+def initial_access_4(h,             ## (Nt, Nr)
+                     delta_pos,     ## (3)
+                     ue_rot,        ## (3)
                      codebook, 
-                     selector, 
-                     k = 5
+                     model_bs,      ## 模型
+                     model_ue,
+                     expense_flag = False       ## 是否返回开销
                      ):
-    thresh_hold = utils.calculate_overall_noise()
-
+    theta_zod_los, phi_aod_los, theta_zoa_los, phi_aoa_los = utils.calculate_los_angle(delta_pos, ue_rot)
     bs_Nz, bs_Ny, ue_Nz, ue_Ny = config["UAV_Scenario_Config"]["bs_z_antenna_num"], config["UAV_Scenario_Config"]["bs_y_antenna_num"], config["UAV_Scenario_Config"]["ue_z_antenna_num"], config["UAV_Scenario_Config"]["ue_y_antenna_num"]
-    Nt = bs_Nz * bs_Ny
-    Nr = ue_Nz * ue_Ny
+    z_center_bs, y_center_bs = utils.calculate_upa_index(theta_zod_los, phi_aod_los, bs_Nz, bs_Ny)
+    z_center_ue, y_center_ue = utils.calculate_upa_index(theta_zoa_los, phi_aoa_los, ue_Nz, ue_Ny)
 
-    delta_pos = torch.tensor(delta_pos.reshape(1, 3), dtype=torch.float32)       # 不在torch上运行
-    ue_rot = torch.tensor(ue_rot.reshape(1, 3), dtype=torch.float32)             # 不在torch上运行
+    delta_pos = torch.tensor(delta_pos, dtype = torch.float32).unsqueeze(0)
+    ue_rot = torch.tensor(ue_rot, dtype = torch.float32).unsqueeze(0)
+    prob_bs = model_bs(delta_pos, ue_rot).squeeze(0)
+    prob_ue = model_ue(delta_pos, ue_rot).squeeze(0)
+    
+    bs_search_r = config["Access_Dataset_Config"]["bs_search_r"]
+    ue_search_r = config["Access_Dataset_Config"]["ue_search_r"]
 
-    selector.eval()
+    idx_sort_bs = torch.argsort(prob_bs)
+    idx_sort_ue = torch.argsort(prob_ue)
 
-    bs_p, ue_p = selector(delta_pos, ue_rot)    # bs_p: (1, Nt), ue_p: (1, Nr)
-    bs_p = bs_p.squeeze(0).detach().numpy()
-    ue_p = ue_p.squeeze(0).detach().numpy()
+    candidate_num = 3
+    length = idx_sort_bs.shape[0]
+    ## 取倒数若干个概率最大值
+    idx_bs_1d_candidate = []#idx_sort_bs[length - candidate_num : ].tolist()
+    idx_ue_1d_candidate = []#idx_sort_ue[length - candidate_num : ].tolist()
 
-    bs_beam_candidate = np.argsort(bs_p)[Nt - k : ]
-    ue_beam_candidate = np.argsort(ue_p)[Nr - k : ]
+    for i in range(length - candidate_num, length):
+        idx_bs_1d = idx_sort_bs[i].item()
+        idx_ue_1d = idx_sort_ue[i].item()
+        ## 添加BS侧候选波束
+        z_bs_s = idx_bs_1d % (2 * bs_search_r + 1) - bs_search_r
+        y_bs_s = idx_bs_1d // (2 * bs_search_r + 1) - bs_search_r
+        z_bs = z_center_bs + z_bs_s
+        y_bs = y_center_bs + y_bs_s
+        idx_bs_1d_candidate.append(z_bs + y_bs * bs_Nz)
+        ## 添加UE侧候选波束
+        z_ue_s = idx_ue_1d % (2 * ue_search_r + 1) - ue_search_r
+        y_ue_s = idx_ue_1d // (2 * ue_search_r + 1) - ue_search_r
+        z_ue = z_center_ue + z_ue_s
+        y_ue = y_center_ue + y_ue_s
+        idx_ue_1d_candidate.append(z_ue + y_ue * ue_Nz)
 
     psd_opt = -1e10
     idx_bs_1d_opt = None
     idx_ue_1d_opt = None    
 
-    for idx_bs in bs_beam_candidate:
+    for idx_bs in idx_bs_1d_candidate:
         hr = np.matmul(h, codebook.bs_dft_codebook[:, idx_bs])
-        br = np.matmul(np.conjugate(codebook.ue_dft_codebook[:, ue_beam_candidate]).T, hr)
+        br = np.matmul(np.conjugate(codebook.ue_dft_codebook[:, idx_ue_1d_candidate]).T, hr)
         psd_r = utils.convert_to_L1RSRP(np.abs(br), config["UAV_Scenario_Config"]["ue_tx_power_max"])
 
         temp_index = np.argmax(psd_r)
-        idx_ue = ue_beam_candidate[temp_index]
+        idx_ue = idx_ue_1d_candidate[temp_index]
         psd_max = psd_r[temp_index]
 
         if psd_max > psd_opt:
             psd_opt = psd_max
             idx_bs_1d_opt = idx_bs
             idx_ue_1d_opt = idx_ue
+    if expense_flag:
+        expense = candidate_num * candidate_num
+        return idx_bs_1d_opt, idx_ue_1d_opt, psd_opt, expense
+    else:
+        return idx_bs_1d_opt, idx_ue_1d_opt, psd_opt
+
+
+def initial_access_5(h,             ## (Nt, Nr)
+                     delta_pos,     ## (3)
+                     ue_rot,        ## (3)
+                     codebook, 
+                     model_bs,      ## 模型
+                     model_ue,
+                     expense_flag = False       ## 是否返回开销
+                     ):
+    theta_zod_los, phi_aod_los, theta_zoa_los, phi_aoa_los = utils.calculate_los_angle(delta_pos, ue_rot)
+    bs_Nz, bs_Ny, ue_Nz, ue_Ny = config["UAV_Scenario_Config"]["bs_z_antenna_num"], config["UAV_Scenario_Config"]["bs_y_antenna_num"], config["UAV_Scenario_Config"]["ue_z_antenna_num"], config["UAV_Scenario_Config"]["ue_y_antenna_num"]
+    z_center_bs, y_center_bs = utils.calculate_upa_index(theta_zod_los, phi_aod_los, bs_Nz, bs_Ny)
+    z_center_ue, y_center_ue = utils.calculate_upa_index(theta_zoa_los, phi_aoa_los, ue_Nz, ue_Ny)
+
+    delta_pos = torch.tensor(delta_pos, dtype = torch.float32).unsqueeze(0)
+    ue_rot = torch.tensor(ue_rot, dtype = torch.float32).unsqueeze(0)
+    prob_bs = model_bs(delta_pos, ue_rot).squeeze(0)
+    prob_ue = model_ue(delta_pos, ue_rot).squeeze(0)
+
+    threshold = 0.02
     
-    return idx_bs_1d_opt, idx_ue_1d_opt, psd_opt
+    bs_search_r = config["Access_Dataset_Config"]["bs_search_r"]
+    ue_search_r = config["Access_Dataset_Config"]["ue_search_r"]
+
+    idx_bs_1d_candidate = []
+    idx_ue_1d_candidate = []
+
+    for (idx_bs_1d, prob) in enumerate(prob_bs):
+        if prob > threshold:
+            z_bs_s = idx_bs_1d % (2 * bs_search_r + 1) - bs_search_r
+            y_bs_s = idx_bs_1d // (2 * bs_search_r + 1) - bs_search_r
+            z_bs = z_center_bs + z_bs_s
+            y_bs = y_center_bs + y_bs_s
+            idx_bs_1d_candidate.append(z_bs + y_bs * bs_Nz)
+    
+    for (idx_ue_1d, prob) in enumerate(prob_ue):
+        if prob > threshold:
+            z_ue_s = idx_ue_1d % (2 * ue_search_r + 1) - ue_search_r
+            y_ue_s = idx_ue_1d // (2 * ue_search_r + 1) - ue_search_r
+            z_ue = z_center_ue + z_ue_s
+            y_ue = y_center_ue + y_ue_s
+            idx_ue_1d_candidate.append(z_ue + y_ue * ue_Nz)
+    
+    psd_opt = -1e10
+    idx_bs_1d_opt = None
+    idx_ue_1d_opt = None    
+
+    for idx_bs in idx_bs_1d_candidate:
+        hr = np.matmul(h, codebook.bs_dft_codebook[:, idx_bs])
+        br = np.matmul(np.conjugate(codebook.ue_dft_codebook[:, idx_ue_1d_candidate]).T, hr)
+        psd_r = utils.convert_to_L1RSRP(np.abs(br), config["UAV_Scenario_Config"]["ue_tx_power_max"])
+
+        temp_index = np.argmax(psd_r)
+        idx_ue = idx_ue_1d_candidate[temp_index]
+        psd_max = psd_r[temp_index]
+
+        if psd_max > psd_opt:
+            psd_opt = psd_max
+            idx_bs_1d_opt = idx_bs
+            idx_ue_1d_opt = idx_ue
+    if expense_flag:
+        expense = len(idx_bs_1d_candidate) * len(idx_ue_1d_candidate)
+        return idx_bs_1d_opt, idx_ue_1d_opt, psd_opt, expense
+    else:
+        return idx_bs_1d_opt, idx_ue_1d_opt, psd_opt
 
 if __name__ == "__main__":
     env_h5 = h5py.File(config["UAV_Scenario_Config"]["env_save_pth"], 'r')

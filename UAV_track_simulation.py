@@ -40,7 +40,7 @@ class UAV_environment:
         self.Nt = self.bs_z_antenna_num * self.bs_y_antenna_num # number of antennas of the transmitter array
         self.Nr = self.ue_z_antenna_num * self.ue_y_antenna_num # number of antennas of the receiver array
 
-        self.ue_num = config["Dataset_Config"]["ue_num"]         
+        self.ue_num = config["Track_Dataset_Config"]["ue_num"]         
 
         self.c = config["UAV_Scenario_Config"]["c"]                    # light speed
         self.f_c = config["UAV_Scenario_Config"]["f_c"]                # Hz carrier frequency
@@ -49,8 +49,8 @@ class UAV_environment:
         self.d = self.lamd / 2                  # distance between elements of planar array( we consider half-wavelength arrays)
         self.kd = 2 * np.pi / self.lamd * self.d
 
-        self.track_period = config["Dataset_Config"]["track_period"]
-        self.track_num = config["Dataset_Config"]["track_num"]
+        self.track_period = config["Track_Dataset_Config"]["track_period"]
+        self.track_num = config["Track_Dataset_Config"]["track_num"]
         self.t_csi = config["UAV_Scenario_Config"]["t_csi"]                    # periodicity of CSI-RS, second 信道状态更新频率
 
         self.times_pilot = self.track_num * self.track_period       # 表示在特定的时间间隔内发送导频信号的次数
@@ -515,8 +515,8 @@ class UAV_environment:
         ## XPR_list: (ue_num, cl_num[u], ray_num) )
         XPR = self.update_cross_polarization_power_ratio()
         h_t = np.zeros((self.ue_num, self.Nr, self.Nt), dtype = np.complex64)
-        for u in range(self.ue_num):
-        # for u in tqdm(range(self.ue_num), desc = "generating the channel of CSI period-%d" % (self.t)):
+        # for u in range(self.ue_num):
+        for u in tqdm(range(self.ue_num), desc = "generating the channel of CSI period-%d" % (self.t)):
             for ncl in range(self.cl_num): #  
                 for nray in range(self.ray_num): # 
                     if ncl == 0:
@@ -593,7 +593,7 @@ class UAV_environment:
                        thresh_hold = 40
                        ):
         self.__initialize_environment()
-        print("start running UAV simulation...")
+        print("UAV dataset for track is generating")
 
         beam_bs_track = [None for _ in range(self.ue_num)]     ## 跟踪的波束
         beam_ue_track = [None for _ in range(self.ue_num)]
@@ -607,6 +607,9 @@ class UAV_environment:
         ## 重新接入之后经过的CSI周期数
         stage = np.zeros((self.ue_num, self.times_pilot), dtype = np.int16)
         stage_t = np.zeros((self.ue_num), dtype = np.int16)
+
+        ue_rot_arr = np.zeros((self.ue_num, self.times_pilot, 3), dtype = np.float32)
+        delta_pos_arr = np.zeros((self.ue_num, self.times_pilot, 3), dtype = np.float32)
 
         count_rot = np.zeros((self.ue_num), dtype = np.int16)
         for self.t in range(self.times_pilot):
@@ -623,17 +626,24 @@ class UAV_environment:
             self.__update_ZOA_and_ZOD()
             self.__update_cluster_gain()
 
-            # h_t = self.__update_channel_response_single_processing()
-            h_t = self.__update_channel_response_multiple_processing()
+            h_t = self.__update_channel_response_single_processing()
+            # h_t = self.__update_channel_response_multiple_processing()
 
             count_rot -= 1
-            delta_pos = self.ue_loc[:, :, self.t] - np.tile(self.bs_loc[None, :], (self.ue_num, 1))
-            ue_rot = self.ue_rot[:, :, self.t]
+
+            delta_pos_temp = self.ue_loc[:, :, self.t] - np.tile(self.bs_loc[None, :], (self.ue_num, 1))
+            ue_rot_temp = np.copy(self.ue_rot[:, :, self.t])
+
+            ## 相对位置和姿态需要加噪
+            delta_pos_arr[:, self.t, :] = utils.add_gauss_noise(delta_pos_temp)
+            ue_rot_arr[:, self.t, :] = utils.add_gauss_noise(ue_rot_temp)
             
             for user in range(self.ue_num):
+                delta_pos_user = delta_pos_arr[user, self.t, :]
+                ue_rot_user = ue_rot_arr[user, self.t, :]
                 if beam_bs_track[user] == None and beam_ue_track[user] == None:
-                    beam_bs_track[user], beam_ue_track[user], _ = initial_access_3(h_t[user], delta_pos[user], 
-                                                                                   ue_rot[user], codebook, 1, 1)
+                    beam_bs_track[user], beam_ue_track[user], _, _  = initial_access_3(h_t[user], delta_pos_user, 
+                                                                                   ue_rot_user, codebook, 1, 1)
                     # print("User-%d retrack: BS beam - %d, UE beam - %d" % (user + 1, beam_bs_track[user], beam_ue_track[user]))
                     # print("track stage - %d" % stage_t[user])
                 snr = utils.calculate_SNR(codebook, h_t[user], beam_bs_track[user], beam_ue_track[user])
@@ -645,8 +655,8 @@ class UAV_environment:
                     beam_ue_track[user] = None
                     stage_t[user] += 1
 
-        dataset_pth = config["Dataset_Config"]["dataset_pth"] % (config["Dataset_Config"]["ue_num"], 
-                                                                 config["Dataset_Config"]["track_num"])
+        dataset_pth = config["Track_Dataset_Config"]["dataset_pth"] % (config["Track_Dataset_Config"]["ue_num"], 
+                                                                 config["Track_Dataset_Config"]["track_num"])
         track_dataset_h5 = h5py.File(dataset_pth, "w")
 
         ## 数据集整体信息
@@ -659,11 +669,9 @@ class UAV_environment:
         for user in range(self.ue_num):
             group_user = track_dataset_h5.create_group("Data_user_%d" % user)
             # ue_rot: (times_pilot, 3)
-            ue_rot = np.transpose(self.ue_rot[user], (1, 0))
-            group_user.create_dataset("ue_rot", data = ue_rot, dtype = np.float32)
+            group_user.create_dataset("ue_rot", data = ue_rot_arr[user, :, :], dtype = np.float32)
             # delta_pos: (times_pilot, 3)
-            delta_pos = np.transpose(self.ue_loc[user] - self.bs_loc[:, None], (1, 0))
-            group_user.create_dataset("delta_pos", data = delta_pos, dtype = np.float32)
+            group_user.create_dataset("delta_pos", data = delta_pos_arr[user, :, :], dtype = np.float32)
             group_user.create_dataset("SNR", data = SNR[user], dtype = np.float32)
             group_user.create_dataset("stage", data = stage[user], dtype = np.int16)
 
@@ -700,10 +708,9 @@ def update_channel_response_for_user(env,
     return h_t
 
 
-
 def plot_SNR_curve(user = 0):
-    dataset_pth = config["Dataset_Config"]["dataset_pth"] % (config["Dataset_Config"]["ue_num"], 
-                                                             config["Dataset_Config"]["track_num"])
+    dataset_pth = config["Track_Dataset_Config"]["dataset_pth"] % (config["Track_Dataset_Config"]["ue_num"], 
+                                                             config["Track_Dataset_Config"]["track_num"])
     track_dataset_h5 = h5py.File(dataset_pth, "r")
     times_pilot = track_dataset_h5["Info"]["times_pilot"][()]
     track_period = track_dataset_h5["Info"]["track_period"][()]
@@ -746,19 +753,19 @@ def plot_SNR_curve(user = 0):
             
 if __name__ == "__main__":
     ## 生成场景
-    # env = UAV_environment()
-    # env.run_simulation(thresh_hold = 40)
-    # from generate_dataset import generate_window_data
-    # generate_window_data()
+    env = UAV_environment()
+    env.run_simulation(thresh_hold = 40)
+    from generate_dataset import generate_window_data
+    generate_window_data()
     
     user = 0
     
-    for user in range(300):  
-        plot_SNR_curve(user = user)
+    # for user in range(300):  
+    plot_SNR_curve(user = user)
     
-    # dataset_pth = config["Dataset_Config"]["dataset_pth"] % (config["UAV_Scenario_Config"]["ue_num"], 
+    # dataset_pth = config["Track_Dataset_Config"]["dataset_pth"] % (config["UAV_Scenario_Config"]["ue_num"], 
     #                                                         config["UAV_Scenario_Config"]["track_num"], 
-    #                                                         config["Dataset_Config"]["window_size"])
+    #                                                         config["Track_Dataset_Config"]["window_size"])
     # track_dataset_h5 = h5py.File(dataset_pth, "r")
     # window_size = track_dataset_h5["Info"]["window_size"][()]
     # group_user = track_dataset_h5["Data_user_%d" % user]

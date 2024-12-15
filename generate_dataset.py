@@ -8,24 +8,24 @@ import json
 with open("./config.json", 'r') as file:
     config = json.load(file)
 
-class Dataset_UAV_iniAccess(Dataset):
+class Dataset_UAV_Access(Dataset):
     def __init__(self, 
                  delta_pos0,
                  ue_rot0,
-                 bs_label,
-                 ue_label
+                 label_bs,
+                 label_ue
                  ):
         super().__init__()
         self.delta_pos0 = delta_pos0
         self.ue_rot0 = ue_rot0
-        self.bs_label = bs_label
-        self.ue_label = ue_label
+        self.label_bs = label_bs
+        self.label_ue = label_ue
     
     def __len__(self):
         return self.delta_pos0.shape[0]
     
     def __getitem__(self, index):
-        return self.delta_pos0[index, :], self.ue_rot0[index, :], self.bs_label[index], self.ue_label[index]
+        return self.delta_pos0[index, :], self.ue_rot0[index, :], self.label_bs[index], self.label_ue[index]
 
 class Dataset_UAV_track(Dataset):
     def __init__(self, 
@@ -48,10 +48,30 @@ class Dataset_UAV_track(Dataset):
     def __getitem__(self, index):
         return self.delta_pos[index], self.ue_rot[index], self.SNR_input[index], self.SNR_output[index], self.SNR_base[index]
 
+def generate_access_loaders(rate = (0.7, 0.3)):
+    dataset_pth = config["Access_Dataset_Config"]["dataset_pth"] % (config["Access_Dataset_Config"]["ue_num"])
+    access_dataset_h5 = h5py.File(dataset_pth, 'r')
+    random_index = access_dataset_h5["random_index"][:]
+    ue_num = access_dataset_h5["ue_num"][()]
+    delta_pos = access_dataset_h5["delta_pos"][:]
+    ue_rot = access_dataset_h5["ue_rot"][:]
+    label_bs = access_dataset_h5["label_bs"][:]
+    label_ue = access_dataset_h5["label_ue"][:]
+    access_dataset_h5.close()
+
+    div = int(ue_num * rate[0])
+    train_idx = random_index[:]
+    train_set = Dataset_UAV_Access(delta_pos[:div, :], ue_rot[:div, :], label_bs[:div], label_ue[:div])
+    valid_set = Dataset_UAV_Access(delta_pos[div:, :], ue_rot[div:, :], label_bs[div:], label_ue[div:])
+
+    train_loader = DataLoader(train_set, shuffle=True, batch_size=config["Network_Config"]["batch_size"], drop_last=True)
+    valid_loader = DataLoader(valid_set, shuffle=False, batch_size=config["Network_Config"]["batch_size"], drop_last=True)
+
+    return train_loader, valid_loader
 
 def generate_track_loaders(rate = (0.7, 0.3)):
-    dataset_pth = config["Dataset_Config"]["dataset_pth"] % (config["Dataset_Config"]["ue_num"], 
-                                                            config["Dataset_Config"]["track_num"])
+    dataset_pth = config["Track_Dataset_Config"]["dataset_pth"] % (config["Track_Dataset_Config"]["ue_num"], 
+                                                            config["Track_Dataset_Config"]["track_num"])
     track_dataset_h5 = h5py.File(dataset_pth, 'r')
     
     info = track_dataset_h5["Info"]
@@ -126,8 +146,8 @@ def generate_track_loaders(rate = (0.7, 0.3)):
     return train_loader, valid_loader
 
 def generate_window_data():
-    dataset_pth = config["Dataset_Config"]["dataset_pth"] % (config["Dataset_Config"]["ue_num"], 
-                                                             config["Dataset_Config"]["track_num"])
+    dataset_pth = config["Track_Dataset_Config"]["dataset_pth"] % (config["Track_Dataset_Config"]["ue_num"], 
+                                                             config["Track_Dataset_Config"]["track_num"])
     if not os.path.exists(dataset_pth):
         print("UAV dataset doesn't exist!")
         return 
@@ -138,8 +158,8 @@ def generate_window_data():
     ue_num = info["ue_num"][()]
     times_pilot = info["times_pilot"][()]
 
-    window_input = config["Dataset_Config"]["window_input"]
-    window_output = config["Dataset_Config"]["window_output"]
+    window_input = config["Track_Dataset_Config"]["window_input"]
+    window_output = config["Track_Dataset_Config"]["window_output"]
     window = window_input + window_output
     
     if "window_input" in info:
@@ -196,21 +216,21 @@ def generate_window_data():
     
 
 if __name__ == "__main__":
-    generate_window_data()
+    # generate_window_data()
 
-    # track_dataset_h5 = h5py.File(config["UAV_Scenario_Config"]["tracking_dataset_pth"], 'r')
-    # SNR_input_window = track_dataset_h5["SNR_input_window"][:]
-    # SNR_output_window = track_dataset_h5["SNR_output_window"][:]
-    # ue_rot_window = track_dataset_h5["ue_rot_window"][:]
-    # track_dataset_h5.close()
-
-    train_loader, valid_loader = generate_track_loaders()
-
-    # print(len(train_loader) * config["UAV_Scenario_Config"]["batch_size"])
-    for (delta_pos_batch, ue_rot_batch, SNR_input_batch, SNR_output_batch, SNR_base_batch) in train_loader:
+    train_loader, valid_loader = generate_access_loaders()
+    for (delta_pos_batch, ue_rot_batch, label_bs, label_ue) in train_loader:
         print(delta_pos_batch.shape)
         print(ue_rot_batch.shape)
-        print(SNR_input_batch.shape)
-        print(SNR_output_batch.shape)
-        print(SNR_base_batch.shape)
+        print(label_bs.shape)
+        print(label_ue.shape)
         break
+
+    # train_loader, valid_loader = generate_track_loaders()
+    # for (delta_pos_batch, ue_rot_batch, SNR_input_batch, SNR_output_batch, SNR_base_batch) in train_loader:
+    #     print(delta_pos_batch.shape)
+    #     print(ue_rot_batch.shape)
+    #     print(SNR_input_batch.shape)
+    #     print(SNR_output_batch.shape)
+    #     print(SNR_base_batch.shape)
+    #     break
